@@ -448,6 +448,11 @@ if "filter_region" not in st.session_state:
 if "filter_status" not in st.session_state:
     st.session_state.filter_status = "All"
 
+if "pdf_bytes" not in st.session_state:
+    st.session_state.pdf_bytes = None
+if "docx_bytes" not in st.session_state:
+    st.session_state.docx_bytes = None
+
 # ============================================================
 # HTML SAFETY HELPER (prevents raw HTML glitch from unescaped user/data content)
 # ============================================================
@@ -456,6 +461,20 @@ def safe_html(text) -> str:
     if text is None:
         return ""
     return html.escape(str(text))
+
+
+def pdf_safe(text, max_len=None) -> str:
+    """Sanitize text for FPDF core fonts (latin-1). Prevents unicode runtime errors on user data with special chars."""
+    if text is None:
+        return ""
+    s = str(text)
+    if max_len:
+        s = s[:max_len]
+    # Force to latin-1, replace unrepresentable chars (e.g. emoji, fancy quotes, dashes)
+    try:
+        return s.encode("latin-1", errors="replace").decode("latin-1")
+    except Exception:
+        return s.encode("ascii", errors="replace").decode("ascii")
 
 
 # ============================================================
@@ -509,6 +528,9 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     
     df = df.rename(columns=new_cols)
     
+    # Remove any duplicate columns (keep first occurrence) after mapping
+    df = df.loc[:, ~df.columns.duplicated(keep="first")]
+    
     # Ensure essential columns exist
     for col in ["Activity", "Indicator", "Target", "Actual"]:
         if col not in df.columns:
@@ -518,7 +540,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["Target", "Actual"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     
-    # Fill missing
+    # Fill missing columns (with defaults)
     if "Unit" not in df.columns:
         df["Unit"] = "%"
     if "Status" not in df.columns:
@@ -530,7 +552,12 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "Date" not in df.columns:
         df["Date"] = datetime.now().strftime("%Y-%m-%d")
     
-    # Clean status values
+    # Robust fillna for key columns to eliminate NaN/"nan" values that cause groupby/min/contains issues
+    df["Unit"] = df["Unit"].fillna("%").astype(str).replace({"": "%", "nan": "%", "NaN": "%", "None": "%"}).str.strip()
+    df["Region"] = df["Region"].fillna("All").astype(str).replace({"": "All", "nan": "All", "NaN": "All", "None": "All", "NaT": "All"}).str.strip()
+    df["Comments"] = df["Comments"].fillna("").astype(str)
+    
+    # Clean status values (robust to NaN/empty)
     status_map = {
         "on track": "On Track",
         "on-track": "On Track",
@@ -544,6 +571,8 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     }
     df["Status"] = df["Status"].astype(str).str.strip().str.title()
     df["Status"] = df["Status"].replace(status_map)
+    df["Status"] = df["Status"].replace({"Nan": "On Track", "None": "On Track", "": "On Track", "nan": "On Track"})
+    df["Status"] = df["Status"].fillna("On Track")
     
     # Parse dates
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
@@ -873,14 +902,14 @@ def generate_pdf_report(df: pd.DataFrame, insights: dict) -> bytes:
     pdf.cell(0, 8, "Top Performers", ln=True)
     pdf.set_font("Helvetica", "", 10)
     for t in m["top_performers"]:
-        pdf.cell(0, 6, f"• {t['Activity']} — {t['Progress']}% ({t['Region']})", ln=True)
+        pdf.cell(0, 6, f"• {pdf_safe(t['Activity'])} — {t['Progress']}% ({pdf_safe(t['Region'])})", ln=True)
     pdf.ln(3)
     
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 8, "Activities Requiring Attention", ln=True)
     pdf.set_font("Helvetica", "", 10)
     for l in m["lagging"]:
-        pdf.cell(0, 6, f"• {l['Activity']} — {l['Progress']}% ({l['Region']})", ln=True)
+        pdf.cell(0, 6, f"• {pdf_safe(l['Activity'])} — {l['Progress']}% ({pdf_safe(l['Region'])})", ln=True)
     pdf.ln(5)
     
     # Recommendations
@@ -888,7 +917,7 @@ def generate_pdf_report(df: pd.DataFrame, insights: dict) -> bytes:
     pdf.cell(0, 8, "AI Recommendations", ln=True)
     pdf.set_font("Helvetica", "", 10)
     for r in insights.get("recommendations", []):
-        pdf.multi_cell(0, 6, f"• {r}")
+        pdf.multi_cell(0, 6, f"• {pdf_safe(r)}")
     pdf.ln(4)
     
     # Data table (first 8 rows)
@@ -910,12 +939,12 @@ def generate_pdf_report(df: pd.DataFrame, insights: dict) -> bytes:
     for idx, row in df.head(8).iterrows():
         prog = round((row["Actual"]/row["Target"]*100),1) if pd.notna(row["Target"]) and row["Target"]>0 else 0
         vals = [
-            str(row["Activity"])[:18],
-            str(row["Indicator"])[:20],
+            pdf_safe(row["Activity"], 18),
+            pdf_safe(row["Indicator"], 20),
             str(int(row["Target"])) if pd.notna(row["Target"]) else "-",
             str(int(row["Actual"])) if pd.notna(row["Actual"]) else "-",
             f"{prog}%",
-            str(row["Status"])[:12]
+            pdf_safe(row["Status"], 12)
         ]
         for v, w in zip(vals, col_width):
             pdf.cell(w, 6, v, border=1, fill=(idx % 2 == 0))
@@ -926,7 +955,7 @@ def generate_pdf_report(df: pd.DataFrame, insights: dict) -> bytes:
     pdf.set_text_color(100)
     pdf.multi_cell(0, 5, "This report was automatically generated by the MERL AI Agent. For interactive analysis and deeper filtering, please use the web dashboard.")
     
-    return pdf.output(dest="S").encode("latin-1")
+    return pdf.output(dest="S")
 
 
 def generate_word_report(df: pd.DataFrame, insights: dict) -> bytes:
@@ -956,7 +985,7 @@ def generate_word_report(df: pd.DataFrame, insights: dict) -> bytes:
     
     # KPIs
     doc.add_heading("Key Performance Indicators", level=1)
-    table = doc.add_table(rows=6, cols=2)
+    table = doc.add_table(rows=5, cols=2)
     table.style = "Table Grid"
     kpis = [
         ("Overall Progress", f"{m['overall_progress']}%"),
@@ -1148,6 +1177,8 @@ def main():
                 st.session_state.chat_history = []
                 st.session_state.filter_region = "All"
                 st.session_state.filter_status = "All"
+                st.session_state.pdf_bytes = None
+                st.session_state.docx_bytes = None
                 set_view("dashboard")
         with c2:
             if st.button("📈 Go to Dashboard", use_container_width=True):
@@ -1211,6 +1242,8 @@ def main():
                         st.session_state.chat_history = []
                         st.session_state.filter_region = "All"
                         st.session_state.filter_status = "All"
+                        st.session_state.pdf_bytes = None
+                        st.session_state.docx_bytes = None
                         st.success(f"✅ Loaded **{uploaded.name}** ({len(st.session_state.df)} rows)")
                         st.rerun()
                     except Exception as e:
@@ -1223,6 +1256,8 @@ def main():
                     st.session_state.chat_history = []
                     st.session_state.filter_region = "All"
                     st.session_state.filter_status = "All"
+                    st.session_state.pdf_bytes = None
+                    st.session_state.docx_bytes = None
                     st.rerun()
 
             with col_u3:
@@ -1232,6 +1267,8 @@ def main():
                     st.session_state.last_upload_name = None
                     st.session_state.filter_region = "All"
                     st.session_state.filter_status = "All"
+                    st.session_state.pdf_bytes = None
+                    st.session_state.docx_bytes = None
                     st.rerun()
 
             st.caption(f"Current file: **{st.session_state.last_upload_name}** • {len(base_df)} total records")
@@ -1381,6 +1418,9 @@ def main():
                                          "Actual": float(actl), "Unit": unit or "%", "Date": datetime.now(),
                                          "Status": stat, "Region": reg or "All", "Comments": comm}])
                     st.session_state.df = pd.concat([st.session_state.df, new], ignore_index=True)
+                    st.session_state.df = normalize_columns(st.session_state.df)
+                    st.session_state.pdf_bytes = None
+                    st.session_state.docx_bytes = None
                     st.success("Record added successfully!")
                     st.rerun()
                 else:
@@ -1468,28 +1508,30 @@ def main():
 
         r1, r2 = st.columns(2)
         with r1:
-            if st.button("📕 Generate & Download PDF Report", use_container_width=True, type="primary"):
+            if st.button("📕 Generate PDF Report", use_container_width=True, type="primary"):
                 with st.spinner("Creating PDF..."):
-                    pdf_bytes = generate_pdf_report(filtered_df, insights)
-                    st.download_button(
-                        "⬇️ Download MERL_Report.pdf",
-                        pdf_bytes,
-                        file_name=f"MERL_Report_{datetime.now().strftime('%Y%m%d')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
+                    st.session_state.pdf_bytes = generate_pdf_report(filtered_df, insights)
+            if st.session_state.pdf_bytes is not None:
+                st.download_button(
+                    "⬇️ Download MERL_Report.pdf",
+                    st.session_state.pdf_bytes,
+                    file_name=f"MERL_Report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
 
         with r2:
-            if st.button("📘 Generate & Download Word Report", use_container_width=True):
+            if st.button("📘 Generate Word Report", use_container_width=True):
                 with st.spinner("Creating Word document..."):
-                    docx_bytes = generate_word_report(filtered_df, insights)
-                    st.download_button(
-                        "⬇️ Download MERL_Report.docx",
-                        docx_bytes,
-                        file_name=f"MERL_Report_{datetime.now().strftime('%Y%m%d')}.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        use_container_width=True,
-                    )
+                    st.session_state.docx_bytes = generate_word_report(filtered_df, insights)
+            if st.session_state.docx_bytes is not None:
+                st.download_button(
+                    "⬇️ Download MERL_Report.docx",
+                    st.session_state.docx_bytes,
+                    file_name=f"MERL_Report_{datetime.now().strftime('%Y%m%d')}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
 
         st.caption("Reports include executive summary, KPIs, top/lagging performers, and AI recommendations.")
 
