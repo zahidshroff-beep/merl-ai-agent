@@ -1136,20 +1136,20 @@ def main():
 
     # Functional navigation buttons (the pills above are visual only).
     # We keep them so navigation is a soft Streamlit rerun (no full browser reload that can expose raw HTML).
-    col_nav = st.columns(5)
-    with col_nav[0]:
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1:
         if st.button("🏠 Home", key="nav_home", use_container_width=True):
             set_view("home")
-    with col_nav[1]:
+    with k2:
         if st.button("📈 Dashboard", key="nav_dash", use_container_width=True):
             set_view("dashboard")
-    with col_nav[2]:
+    with k3:
         if st.button("📋 Data & Entry", key="nav_data", use_container_width=True):
             set_view("data")
-    with col_nav[3]:
+    with k4:
         if st.button("🤖 AI Assistant", key="nav_ai", use_container_width=True):
             set_view("ai")
-    with col_nav[4]:
+    with k5:
         if st.button("📄 Reports & Insights", key="nav_reports", use_container_width=True):
             set_view("reports")
 
@@ -1508,26 +1508,28 @@ def main():
 
         r1, r2 = st.columns(2)
         with r1:
+            pdf_bytes = None
             if st.button("📕 Generate PDF Report", use_container_width=True, type="primary"):
                 with st.spinner("Creating PDF..."):
-                    st.session_state.pdf_bytes = generate_pdf_report(filtered_df, insights)
-            if st.session_state.pdf_bytes is not None:
+                    pdf_bytes = generate_pdf_report(filtered_df, insights)
+            if pdf_bytes is not None:
                 st.download_button(
                     "⬇️ Download MERL_Report.pdf",
-                    st.session_state.pdf_bytes,
+                    pdf_bytes,
                     file_name=f"MERL_Report_{datetime.now().strftime('%Y%m%d')}.pdf",
                     mime="application/pdf",
                     use_container_width=True,
                 )
 
         with r2:
+            docx_bytes = None
             if st.button("📘 Generate Word Report", use_container_width=True):
                 with st.spinner("Creating Word document..."):
-                    st.session_state.docx_bytes = generate_word_report(filtered_df, insights)
-            if st.session_state.docx_bytes is not None:
+                    docx_bytes = generate_word_report(filtered_df, insights)
+            if docx_bytes is not None:
                 st.download_button(
                     "⬇️ Download MERL_Report.docx",
-                    st.session_state.docx_bytes,
+                    docx_bytes,
                     file_name=f"MERL_Report_{datetime.now().strftime('%Y%m%d')}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True,
